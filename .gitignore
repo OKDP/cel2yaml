@@ -1,0 +1,20 @@
+# Binaries; dist/, goreleaser's
+bin/
+dist/
+
+# Test binary and coverage
+*.test
+*.out
+
+# Go workspace file
+go.work
+go.work.sum
+
+# IDEs and editors
+.idea/
+.vscode/
+.zed/
+
+# AI assistants
+CLAUDE.md
+.claude/

@@ -1,0 +1,44 @@
+# Dependabot: a weekly pull request per ecosystem, its updates grouped, a
+# release a week old at least. The commit types are those release-please
+# reads: deps (in the changelog, a patch release) for the library's go.mod;
+# ci (hidden) for golangci-lint (tools/go.mod) and the workflows' actions.
+# A cel-go update leaves the CEL extensions at their pinned versions
+# (Session.compile in session.go): a version is raised by hand, with the
+# README's CEL libraries table.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: deps
+    groups:
+      go:
+        patterns: ["*"]
+
+  - package-ecosystem: gomod
+    directory: /tools
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ci
+    groups:
+      tools:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns: ["*"]

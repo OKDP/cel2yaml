@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/okdp/cel2yaml/internal/value"
+	"github.com/okdp/cel2yaml/value"
 )
 
 // mapCtx: a small scope for document tests.
@@ -29,7 +29,7 @@ func mapCtx() M {
 
 // evalIn: the document src compiled and evaluated on scope in the session
 // s, as data; keep false when it is left out.
-func evalIn(s *Session, src string, scope M) (v any, keep bool, err error) {
+func evalIn(ctx context.Context, s *Session, src string, scope M) (v any, keep bool, err error) {
 	n, err := Parse([]byte(src))
 	if err != nil {
 		return nil, false, err
@@ -38,13 +38,13 @@ func evalIn(s *Session, src string, scope M) (v any, keep bool, err error) {
 	if err != nil {
 		return nil, false, err
 	}
-	err = s.Document(func() (err error) { v, keep, err = t.Eval(scope); return err })
+	err = s.Document(func() (err error) { v, keep, err = t.Eval(ctx, scope); return err })
 	return v, keep, err
 }
 
 // run: the document src on mapCtx, in a session without a limit, as data.
 func run(src string) (any, error) {
-	v, _, err := evalIn(NewSession(context.Background(), 0), src, mapCtx())
+	v, _, err := evalIn(context.Background(), NewSession(0), src, mapCtx())
 	return v, err
 }
 
@@ -60,7 +60,7 @@ func evalExpr(s *Session, src string, scope M) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.run(e, scope)
+	return s.run(context.Background(), e, scope)
 }
 
 // TestDirectives: each directive of the language, on one key x.
@@ -195,7 +195,7 @@ func TestRoot(t *testing.T) {
 		"a key written twice": {"a: 1\na: 2\n", M{"a": float64(2)}, true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			got, keep, err := evalIn(NewSession(context.Background(), 0), tc.src, mapCtx())
+			got, keep, err := evalIn(context.Background(), NewSession(0), tc.src, mapCtx())
 			if err != nil || keep != tc.keep || !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("got %#v, keep %v (%v), want %#v, keep %v", got, keep, err, tc.want, tc.keep)
 			}
@@ -284,8 +284,8 @@ func TestRenderLimit(t *testing.T) {
 	if _, err := Render(context.Background(), src, scope); err != nil {
 		t.Fatalf("within the limit: %v", err)
 	}
-	s := NewSession(context.Background(), 5)
-	_, err := s.Render([]byte("a: ${{ [1, 2, 3].map(i, i * 2) }}\nb: ${{ [1, 2, 3].map(i, i * 2) }}\n"), nil)
+	s := NewSession(5)
+	_, err := s.Render(context.Background(), []byte("a: ${{ [1, 2, 3].map(i, i * 2) }}\nb: ${{ [1, 2, 3].map(i, i * 2) }}\n"), nil)
 	if want := "exceed its CEL cost limit (5)"; err == nil || !strings.HasSuffix(err.Error(), want) {
 		t.Errorf("past the limit: got %v, want %q", err, want)
 	}
@@ -312,10 +312,10 @@ func TestDocument(t *testing.T) {
 		return a, b
 	}
 	eval := func(tpl *Template) func() error {
-		return func() error { _, _, err := tpl.Eval(scope); return err }
+		return func() error { _, _, err := tpl.Eval(context.Background(), scope); return err }
 	}
 	const want = "the values the document builds exceed 32 MiB"
-	s := NewSession(context.Background(), 0)
+	s := NewSession(0)
 	a, b := templates(s)
 	err := s.Document(func() error { return errors.Join(eval(a)(), eval(b)()) })
 	if err == nil || !strings.HasSuffix(err.Error(), want) {
@@ -328,7 +328,7 @@ func TestDocument(t *testing.T) {
 	}
 	// A document inside another, in the call of a host function: its size
 	// counted from 0, then added to the outer's, which passes 32 MiB.
-	s = NewSession(context.Background(), 0)
+	s = NewSession(0)
 	a, b = templates(s)
 	err = s.Document(func() error {
 		if err := eval(a)(); err != nil {
@@ -353,7 +353,7 @@ func TestDocument(t *testing.T) {
 // compile before any is evaluated.
 func TestTemplate(t *testing.T) {
 	var calls int
-	s := NewSession(context.Background(), 0, hostCount(&calls))
+	s := NewSession(0, hostCount(&calls))
 	good, err := Parse([]byte("a: ${{ count(x) }}\nb: {$if: '${{ x > 1 }}', c: '${{ x }}'}\n"))
 	if err != nil {
 		t.Fatal(err)
@@ -380,7 +380,7 @@ func TestTemplate(t *testing.T) {
 		{1, M{"a": float64(1)}},
 		{2, M{"a": float64(2), "b": M{"c": float64(2)}}},
 	} {
-		got, keep, err := tpl.Eval(M{"x": tc.x})
+		got, keep, err := tpl.Eval(context.Background(), M{"x": tc.x})
 		if err != nil || !keep || !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("x = %v: got %#v, keep %v (%v), want %#v", tc.x, got, keep, err, tc.want)
 		}
@@ -394,7 +394,7 @@ func TestTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, _, err := tpl.Eval(M{"a": "x", "b": "y"}); err != nil || got != "xy" {
+	if got, _, err := tpl.Eval(context.Background(), M{"a": "x", "b": "y"}); err != nil || got != "xy" {
 		t.Errorf("unsorted names: got %#v (%v)", got, err)
 	}
 	// A nil node is null; a left out node is not kept.
@@ -402,12 +402,12 @@ func TestTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, keep, err := tpl.Eval(nil); err != nil || !keep || got != nil {
+	if got, keep, err := tpl.Eval(context.Background(), nil); err != nil || !keep || got != nil {
 		t.Errorf("a nil node: got %#v, keep %v (%v)", got, keep, err)
 	}
 	n, _ = Parse([]byte("{$if: false, a: 1}\n"))
 	tpl, _ = s.Template(n, nil)
-	if got, keep, err := tpl.Eval(nil); err != nil || keep || got != nil {
+	if got, keep, err := tpl.Eval(context.Background(), nil); err != nil || keep || got != nil {
 		t.Errorf("left out: got %#v, keep %v (%v)", got, keep, err)
 	}
 }
@@ -416,7 +416,7 @@ func TestTemplate(t *testing.T) {
 // argument, is data, as cel-go converts it to JSON, wherever its optionals,
 // numbers, bytes, timestamps are; what has no data form fails.
 func TestExpressionValues(t *testing.T) {
-	s := NewSession(context.Background(), 0)
+	s := NewSession(0)
 	for expr, want := range map[string]any{
 		"{'o': values.?extra.k, 'l': [1, 2u]}":                M{"o": "v", "l": []any{float64(1), float64(2)}},
 		"[9007199254740993, 0.0/0.0, -1.0/0.0]":               []any{"9007199254740993", "NaN", "-Infinity"},
@@ -448,7 +448,7 @@ func TestExpressionValues(t *testing.T) {
 // base64.encode (encoders 0), format's precision at most 100 (strings 5),
 // last (optional types 2); and json.encode, a host function, keys sorted.
 func TestLibraries(t *testing.T) {
-	s := NewSession(context.Background(), 0)
+	s := NewSession(0)
 	for expr, want := range map[string]any{
 		"json.encode({'b': [1, 'x'], 'a': 2.5})": `{"a":2.5,"b":[1,"x"]}`,
 		"base64.encode(b'a')":                    "YQ==",
@@ -578,7 +578,7 @@ func FuzzParse(f *testing.F) {
 func TestFunctions(t *testing.T) {
 	scope := mapCtx()
 	scope["config"] = M{"b": float64(1), "a": []any{"x"}}
-	v, _, err := evalIn(NewSession(context.Background(), 0), `
+	v, _, err := evalIn(context.Background(), NewSession(0), `
 x:
   checksum: ${{ sha256(toJson(config)) }}
   json: ${{ toJson(config) }}

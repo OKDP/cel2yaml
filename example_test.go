@@ -29,8 +29,8 @@ func ExampleFunc() {
 		}
 		return strings.ToUpper(s) + "!", nil
 	})
-	s := cel2yaml.NewSession(context.Background(), cel2yaml.DefaultCostLimit, shout)
-	out, err := s.Render([]byte("greeting: ${{ shout(name) }}\n"), cel2yaml.Scope{"name": "hello"})
+	s := cel2yaml.NewSession(cel2yaml.DefaultCostLimit, shout)
+	out, err := s.Render(context.Background(), []byte("greeting: ${{ shout(name) }}\n"), cel2yaml.Scope{"name": "hello"})
 	fmt.Printf("%s%v\n", out, err)
 	// Output:
 	// greeting: HELLO!
@@ -39,7 +39,7 @@ func ExampleFunc() {
 
 // Template: the parts of a document compiled together, then evaluated.
 func ExampleSession_Template() {
-	s := cel2yaml.NewSession(context.Background(), cel2yaml.DefaultCostLimit)
+	s := cel2yaml.NewSession(cel2yaml.DefaultCostLimit)
 	parse := func(src string) *cel2yaml.Template {
 		n, err := cel2yaml.Parse([]byte(src))
 		if err != nil {
@@ -55,7 +55,7 @@ func ExampleSession_Template() {
 	_ = s.Document(func() error {
 		for _, x := range []float64{1, 10} {
 			for _, t := range []*cel2yaml.Template{a, b} {
-				v, keep, err := t.Eval(cel2yaml.Scope{"x": x})
+				v, keep, err := t.Eval(context.Background(), cel2yaml.Scope{"x": x})
 				fmt.Println(v, keep, err)
 			}
 		}

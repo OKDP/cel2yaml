@@ -6,7 +6,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/okdp/cel2yaml/internal/value"
+	"github.com/okdp/cel2yaml/value"
 )
 
 // M: a values map (value.M).

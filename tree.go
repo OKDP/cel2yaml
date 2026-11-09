@@ -9,25 +9,26 @@
 package cel2yaml
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
 	"slices"
 	"strings"
 
-	"github.com/okdp/cel2yaml/internal/value"
+	"github.com/okdp/cel2yaml/value"
 )
 
 // node: a node of the tree, evaluated on a scope holding the names it was
 // built with: its value, keep false when it is left out ($if false).
 type node interface {
-	eval(s *Session, scope M) (v any, keep bool, err error)
+	eval(ctx context.Context, s *Session, scope M) (v any, keep bool, err error)
 }
 
 // item: a list item, evaluated: the values it gives, none ($if false),
 // one, or several ($for, $spread).
 type item interface {
-	items(s *Session, scope M) ([]any, error)
+	items(ctx context.Context, s *Session, scope M) ([]any, error)
 }
 
 // constant: a scalar without expression: a number, a boolean, null, or a
@@ -36,17 +37,17 @@ type constant struct{ v any }
 
 // eval: the scalar, its size counted (Session.grow): the values hold it
 // once more.
-func (c constant) eval(s *Session, _ M) (any, bool, error) {
+func (c constant) eval(ctx context.Context, s *Session, _ M) (any, bool, error) {
 	n := uint64(scalarMem)
 	if str, ok := c.v.(string); ok {
 		n += uint64(len(str))
 	}
-	return c.v, true, s.grow(n)
+	return c.v, true, s.grow(ctx, n)
 }
 
 // eval: a lone expression, the whole scalar: its value, of its type.
-func (e *expr) eval(s *Session, scope M) (any, bool, error) {
-	v, err := s.run(e, scope)
+func (e *expr) eval(ctx context.Context, s *Session, scope M) (any, bool, error) {
+	v, err := s.run(ctx, e, scope)
 	return v, true, err
 }
 
@@ -61,20 +62,20 @@ type part struct {
 }
 
 // eval: the text, its expressions evaluated in order.
-func (t text) eval(s *Session, scope M) (any, bool, error) {
+func (t text) eval(ctx context.Context, s *Session, scope M) (any, bool, error) {
 	var b strings.Builder
 	for _, p := range t {
 		if p.e == nil {
 			b.WriteString(p.lit)
 			continue
 		}
-		v, err := s.run(p.e, scope)
+		v, err := s.run(ctx, p.e, scope)
 		if err != nil {
 			return nil, false, err
 		}
 		b.WriteString(value.Str(v))
 	}
-	return b.String(), true, s.grow(scalarMem + uint64(b.Len()))
+	return b.String(), true, s.grow(ctx, scalarMem+uint64(b.Len()))
 }
 
 // list: a YAML list, its items in order; an error at the position of the
@@ -83,27 +84,27 @@ type list []item
 
 // eval: the values of the items, spliced, their slots counted
 // (Session.grow), their values by the nodes that give them.
-func (l list) eval(s *Session, scope M) (any, bool, error) {
+func (l list) eval(ctx context.Context, s *Session, scope M) (any, bool, error) {
 	out := []any{}
 	for i, it := range l {
-		vs, err := it.items(s, scope)
+		vs, err := it.items(ctx, s, scope)
 		if err == nil {
-			err = s.grow(slotMem * uint64(len(vs)))
+			err = s.grow(ctx, slotMem*uint64(len(vs)))
 		}
 		if err != nil {
 			return nil, false, atIndex(i, err)
 		}
 		out = append(out, vs...)
 	}
-	return out, true, s.grow(containerMem)
+	return out, true, s.grow(ctx, containerMem)
 }
 
 // one: a list item that is one node: its value, none when it is left out.
 type one struct{ n node }
 
 // items: the node's value, kept.
-func (o one) items(s *Session, scope M) ([]any, error) {
-	v, keep, err := o.n.eval(s, scope)
+func (o one) items(ctx context.Context, s *Session, scope M) ([]any, error) {
+	v, keep, err := o.n.eval(ctx, s, scope)
 	if err != nil || !keep {
 		return nil, err
 	}
@@ -115,8 +116,8 @@ func (o one) items(s *Session, scope M) ([]any, error) {
 type spread struct{ n node }
 
 // items: the list's items.
-func (sp spread) items(s *Session, scope M) ([]any, error) {
-	v, _, err := sp.n.eval(s, scope)
+func (sp spread) items(ctx context.Context, s *Session, scope M) ([]any, error) {
+	v, _, err := sp.n.eval(ctx, s, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -140,25 +141,25 @@ type field struct {
 
 // eval: the map: its keys kept, then $merge, a copy of its map merged
 // over them; its entries and the copy counted (Session.grow).
-func (m plainMap) eval(s *Session, scope M) (any, bool, error) {
+func (m plainMap) eval(ctx context.Context, s *Session, scope M) (any, bool, error) {
 	out := M{}
-	if err := s.grow(containerMem); err != nil {
+	if err := s.grow(ctx, containerMem); err != nil {
 		return nil, false, err
 	}
 	for _, f := range m.fields {
-		v, keep, err := f.n.eval(s, scope)
+		v, keep, err := f.n.eval(ctx, s, scope)
 		if err == nil && keep {
-			err = s.grow(slotMem + uint64(len(f.out)))
+			err = s.grow(ctx, slotMem+uint64(len(f.out)))
 		}
 		if err != nil {
-			return nil, false, atKey(f.key, err)
+			return nil, false, AtKey(f.key, err)
 		}
 		if keep {
 			out[f.out] = v
 		}
 	}
 	if m.merge != nil {
-		v, _, err := m.merge.eval(s, scope)
+		v, _, err := m.merge.eval(ctx, s, scope)
 		if err != nil {
 			return nil, false, err
 		}
@@ -167,7 +168,7 @@ func (m plainMap) eval(s *Session, scope M) (any, bool, error) {
 		if !ok {
 			return nil, false, s.sizeError()
 		}
-		if err := s.grow(n); err != nil {
+		if err := s.grow(ctx, n); err != nil {
 			return nil, false, err
 		}
 		out = value.Merge(out, src)
@@ -184,15 +185,15 @@ type ifNode struct {
 }
 
 // eval: the condition, then the branch it takes.
-func (n ifNode) eval(s *Session, scope M) (any, bool, error) {
-	c, _, err := n.cond.eval(s, scope)
+func (n ifNode) eval(ctx context.Context, s *Session, scope M) (any, bool, error) {
+	c, _, err := n.cond.eval(ctx, s, scope)
 	switch {
 	case err != nil:
 		return nil, false, err
 	case value.Truthy(c):
-		return n.then.eval(s, scope)
+		return n.then.eval(ctx, s, scope)
 	case n.els != nil:
-		return n.els.eval(s, scope)
+		return n.els.eval(ctx, s, scope)
 	}
 	return nil, false, nil
 }
@@ -206,15 +207,16 @@ type loop struct {
 	vars       bindings
 }
 
-// run: f on the scope of each element of the list, in order: scope, the
-// variable bound to the element, then the $vars bindings. A null list has
-// no element; a value that is not a list fails. Each element counts 1 in
+// run: f on the scope of each element of the list, in order: a copy of
+// scope, the variable bound to the element, then the $vars bindings, so a
+// binding of one element is not in scope of the next. A null list has no
+// element; a value that is not a list fails. Each element counts 1 in
 // the CEL cost, the context checked (Session.charge), and what its body
 // builds counts too (Session.grow): a $for repeats its body without an
 // evaluation of CEL's own, three nested over a list of 150 elements
 // building 3.4 million items from an expression of cost 150.
-func (l *loop) run(s *Session, scope M, f func(local M) error) error {
-	v, _, err := l.list.eval(s, scope)
+func (l *loop) run(ctx context.Context, s *Session, scope M, f func(local M) error) error {
+	v, _, err := l.list.eval(ctx, s, scope)
 	if err != nil {
 		return err
 	}
@@ -225,18 +227,16 @@ func (l *loop) run(s *Session, scope M, f func(local M) error) error {
 	if len(elems) == 0 {
 		return nil
 	}
-	// One copy of scope for the elements, its variable and $vars bound
-	// again for each: an evaluation keeps no scope, its value being data.
-	local := make(M, len(scope)+1+len(l.vars))
-	maps.Copy(local, scope)
 	s.loops++
 	defer func() { s.loops-- }()
 	for _, x := range elems {
-		if err := s.charge(1); err != nil {
+		if err := s.charge(ctx, 1); err != nil {
 			return fmt.Errorf("$for %q: %w", l.spec, err)
 		}
+		local := make(M, len(scope)+1+len(l.vars))
+		maps.Copy(local, scope)
 		local[l.name] = x
-		if err := l.vars.bind(s, local); err != nil {
+		if err := l.vars.bind(ctx, s, local); err != nil {
 			return err
 		}
 		if err := f(local); err != nil {
@@ -254,25 +254,25 @@ type forMap struct {
 }
 
 // eval: the map of the elements.
-func (m *forMap) eval(s *Session, scope M) (any, bool, error) {
+func (m *forMap) eval(ctx context.Context, s *Session, scope M) (any, bool, error) {
 	out := M{}
-	err := m.run(s, scope, func(local M) error {
-		k, _, err := m.key.eval(s, local)
+	err := m.run(ctx, s, scope, func(local M) error {
+		k, _, err := m.key.eval(ctx, s, local)
 		if err != nil {
 			return err
 		}
-		v, _, err := m.val.eval(s, local)
+		v, _, err := m.val.eval(ctx, s, local)
 		if err != nil {
 			return err
 		}
 		key := value.Str(k)
 		out[key] = v
-		return s.grow(slotMem + uint64(len(key)))
+		return s.grow(ctx, slotMem+uint64(len(key)))
 	})
 	if err != nil {
 		return nil, false, err
 	}
-	return out, true, s.grow(containerMem)
+	return out, true, s.grow(ctx, containerMem)
 }
 
 // forItem: a list item with $for: the items $each gives per element, a
@@ -283,10 +283,10 @@ type forItem struct {
 }
 
 // items: the items of the elements.
-func (it *forItem) items(s *Session, scope M) ([]any, error) {
+func (it *forItem) items(ctx context.Context, s *Session, scope M) ([]any, error) {
 	var out []any
-	err := it.run(s, scope, func(local M) error {
-		v, keep, err := it.each.eval(s, local)
+	err := it.run(ctx, s, scope, func(local M) error {
+		v, keep, err := it.each.eval(ctx, s, local)
 		if err != nil {
 			return err
 		}
@@ -313,11 +313,11 @@ type binding struct {
 
 // bind: the bindings evaluated in order, each added to scope, in place, as
 // soon as it is evaluated: a value left out by $if binds null.
-func (bs bindings) bind(s *Session, scope M) error {
+func (bs bindings) bind(ctx context.Context, s *Session, scope M) error {
 	for _, b := range bs {
-		v, _, err := b.n.eval(s, scope)
+		v, _, err := b.n.eval(ctx, s, scope)
 		if err != nil {
-			return atKey(b.at, err)
+			return AtKey(b.at, err)
 		}
 		scope[b.name] = v
 	}
@@ -343,7 +343,7 @@ func under(d string, err error) error {
 	if err == nil || errors.As(err, new(*exprError)) {
 		return err
 	}
-	return atKey(d, err)
+	return AtKey(d, err)
 }
 
 // builder: builds the tree of a document in a session, whose environments
@@ -464,12 +464,12 @@ func (b builder) plainMap(m *omap, names []string) (node, error) {
 		}
 	}
 	for _, f := range m.fields() {
-		if !literal(f.key) {
+		if !Literal(f.key) {
 			continue
 		}
 		n, err := b.node(f.val, names)
 		if err != nil {
-			return nil, atKey(f.key, err)
+			return nil, AtKey(f.key, err)
 		}
 		out.fields = append(out.fields, field{f.key, strings.TrimPrefix(f.key, "$"), n})
 	}
@@ -508,7 +508,7 @@ func (b builder) forMap(m *omap, names []string) (node, error) {
 		return nil, err
 	}
 	if !has(m, "$key") || !has(m, "$value") {
-		return nil, atKey("$for", fmt.Errorf("in a map, needs $key and $value"))
+		return nil, AtKey("$for", fmt.Errorf("in a map, needs $key and $value"))
 	}
 	cond, err := b.cond(m, names)
 	if err != nil {
@@ -535,7 +535,7 @@ func (b builder) forItem(m *omap, names []string) (item, error) {
 		return nil, err
 	}
 	if !has(m, "$each") {
-		return nil, atKey("$for", fmt.Errorf("in a list item, needs $each"))
+		return nil, AtKey("$for", fmt.Errorf("in a list item, needs $each"))
 	}
 	l, local, err := b.loop(m, names)
 	if err != nil {
@@ -574,7 +574,7 @@ func (b builder) loop(m *omap, names []string) (loop, []string, error) {
 	if l.list, err = b.scalar("${{"+src+"}}", names); err != nil {
 		return loop{}, nil, err
 	}
-	local := withName(names, l.name)
+	local := WithName(names, l.name)
 	if l.vars, local, err = b.bindings(m.get("$vars"), local); err != nil {
 		return loop{}, nil, err
 	}
@@ -607,23 +607,24 @@ func (b builder) bindings(v any, names []string) (bindings, []string, error) {
 	}
 	m, ok := v.(*omap)
 	if !ok {
-		return nil, nil, atKey("$vars", fmt.Errorf("must be a map of bindings, got %s", shape(v)))
+		return nil, nil, AtKey("$vars", fmt.Errorf("must be a map of bindings, got %s", Shape(v)))
 	}
 	out := make(bindings, 0, len(m.entries))
 	for _, e := range m.entries {
 		at := "$vars " + e.key
 		n, err := b.node(e.val, names)
 		if err != nil {
-			return nil, nil, atKey(at, err)
+			return nil, nil, AtKey(at, err)
 		}
 		out = append(out, binding{e.key, at, n})
-		names = withName(names, e.key)
+		names = WithName(names, e.key)
 	}
 	return out, names, nil
 }
 
-// withName: names, sorted, with n.
-func withName(names []string, n string) []string {
+// WithName: names, sorted, with n, in a new slice when it is added: the
+// names in scope past a binding (Session.Template takes them sorted).
+func WithName(names []string, n string) []string {
 	i, found := slices.BinarySearch(names, n)
 	if found {
 		return names
@@ -635,16 +636,16 @@ func withName(names []string, n string) []string {
 // key when keys is set.
 func check(m *omap, keys bool, dirs ...string) error {
 	for _, f := range m.fields() {
-		if k := f.key; (!keys || !literal(k)) && !slices.Contains(dirs, k) {
-			return atKey(k, fmt.Errorf("not allowed here (allowed: %s)", strings.Join(dirs, ", ")))
+		if k := f.key; (!keys || !Literal(k)) && !slices.Contains(dirs, k) {
+			return AtKey(k, fmt.Errorf("not allowed here (allowed: %s)", strings.Join(dirs, ", ")))
 		}
 	}
 	return nil
 }
 
-// literal: k is a key, not a directive: it does not start with $, or it
+// Literal: k is a key, not a directive: it does not start with $, or it
 // starts with $$ (the key is written with one $ less).
-func literal(k string) bool { return !strings.HasPrefix(k, "$") || strings.HasPrefix(k, "$$") }
+func Literal(k string) bool { return !strings.HasPrefix(k, "$") || strings.HasPrefix(k, "$$") }
 
 // has: m holds the key k.
 func has(m *omap, k string) bool {
@@ -652,11 +653,12 @@ func has(m *omap, k string) bool {
 	return ok
 }
 
-// shape: a node for a message: a map or a list by its kind, null, else the
-// scalar as Go's %#v prints it.
-func shape(n any) string {
+// Shape: a value for a message, a document's as read (a *omap) or data (an
+// M): a map or a list by its kind, null, else the scalar as Go's %#v prints
+// it.
+func Shape(n any) string {
 	switch n.(type) {
-	case *omap:
+	case *omap, M:
 		return "a map"
 	case []any:
 		return "a list"
@@ -666,10 +668,10 @@ func shape(n any) string {
 	return value.Short(n)
 }
 
-// atKey: err, under the key k (a map key, "$vars <name>"): its path in the
+// AtKey: err, under the key k (a map key, "$vars <name>"): its path in the
 // document, down to the expression (app: env[2]: value: ...); a list
 // position follows the key before it without a separator.
-func atKey(k string, err error) error {
+func AtKey(k string, err error) error {
 	if strings.HasPrefix(err.Error(), "[") {
 		return fmt.Errorf("%s%w", k, err)
 	}
@@ -677,4 +679,4 @@ func atKey(k string, err error) error {
 }
 
 // atIndex: err, at the position i of a list.
-func atIndex(i int, err error) error { return atKey(fmt.Sprintf("[%d]", i), err) }
+func atIndex(i int, err error) error { return AtKey(fmt.Sprintf("[%d]", i), err) }

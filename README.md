@@ -313,7 +313,16 @@ Whatever the limit, a document builds 32 MiB of values at most, about the
 bytes they take in memory: what its directives build, what its
 expressions return, a value counted each time a list holds it again, as
 each is a copy. Past it, the compile fails with
-`the values the document builds exceed 32 MiB`.
+`the values the document builds exceed 32 MiB`. The same bound applies
+to a single value as an expression builds it: a list or a map literal,
+a concatenation, a comprehension's accumulator, whatever reads it next
+(a host function, `==`, `flatten`, `format`), so that a value that holds
+another many times is refused as it is built, not by the walk or the
+copy that would follow; and an argument larger than that fails a host
+function before its conversion.
+
+`l == r` and `l != r` of two lists or two maps cost the size of their
+smaller side, a unit per 256 bytes: a comparison walks both sides whole.
 
 ## Errors
 
@@ -347,13 +356,13 @@ keys sorted. It returns nil for a document a false `$if` leaves out, or
 an empty one. `Data` reads a YAML node as such a value, as the command
 reads a context file.
 
-A `Session` carries what the compiles of a caller share: its context, a
-total CEL cost, the host functions of the caller and the CEL
-environments, built once:
+A `Session` carries what the compiles of a caller share: a total CEL
+cost, the host functions of the caller and the CEL environments, built
+once. Each evaluation takes its context, which cancels it:
 
 ```go
-s := cel2yaml.NewSession(ctx, cel2yaml.DefaultCostLimit, hostFuncs...)
-out, err := s.Render(src, scope)
+s := cel2yaml.NewSession(cel2yaml.DefaultCostLimit, hostFuncs...)
+out, err := s.Render(ctx, src, scope)
 fmt.Println(s.Used()) // the CEL cost so far
 ```
 
@@ -369,7 +378,7 @@ upper := cel2yaml.Func("shout", cel.StringType, func(v any) (string, error) {
 	}
 	return strings.ToUpper(s) + "!", nil
 })
-s := cel2yaml.NewSession(ctx, cel2yaml.DefaultCostLimit, upper)
+s := cel2yaml.NewSession(cel2yaml.DefaultCostLimit, upper)
 ```
 
 For a caller that compiles the parts of a document separately, the
@@ -377,10 +386,10 @@ steps of `Render`: `Parse` reads a YAML document as a `*yaml.Node`
 (refusing aliases and scalars without a data form, with their line);
 `Session.Template` compiles a node against the sorted names of the
 variables it is evaluated on, checking every directive and compiling
-every expression in every branch; `Template.Eval` evaluates it on a scope
-and returns its data, and whether it is kept (`false` when a `$if`
-leaves it out). Compile everything that is evaluated together before
-evaluating any of it. `Session.Document` groups evaluations as one
+every expression in every branch; `Template.Eval` evaluates it on a
+context and a scope and returns its data, and whether it is kept
+(`false` when a `$if` leaves it out). Compile everything that is
+evaluated together before evaluating any of it. `Session.Document` groups evaluations as one
 document for the size cap: counted from 0, then added to the document
 that holds it, for one a host function evaluates inside an expression
 of another.
@@ -388,14 +397,17 @@ of another.
 | Function | Use |
 |---|---|
 | `Render(ctx, src, scope)` | a document to YAML, with `DefaultCostLimit` |
-| `NewSession(ctx, limit, funcs...)` | a session: context, total CEL cost, host functions |
-| `(*Session).Render(src, scope)` | the same in a session |
+| `NewSession(limit, funcs...)` | a session: total CEL cost, host functions |
+| `(*Session).Render(ctx, src, scope)` | the same in a session |
 | `Parse(src)`, `Data(node)` | a YAML document as a node, a node as data |
 | `(*Session).Template(node, names)` | a node compiled, in every branch |
-| `(*Template).Eval(scope)` | its data, and whether it is kept |
+| `(*Template).Eval(ctx, scope)` | its data, and whether it is kept |
 | `(*Session).Document(f)` | evaluations counted as one document |
 | `(*Session).Used()` | the CEL cost so far |
 | `Func`, `Unary`, `Costed` | host functions |
+| `ToData(v)` | a CEL value as data |
+| `Literal(k)`, `AtKey(k, err)`, `WithName(names, n)`, `Shape(v)` | what a reader of the language's documents shares with it: a key that is no directive, an error's path, the names in scope, a value in a message |
+| `value` (package) | the data of the language: `Copy`, `AsMap`, `AsList`, `Merge`, `Truthy`, `Str`, `Normalize`, `Short` |
 
 A session is not safe for concurrent use: one per compile.
 

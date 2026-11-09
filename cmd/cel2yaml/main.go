@@ -16,7 +16,7 @@ import (
 	"os"
 
 	"github.com/okdp/cel2yaml"
-	"github.com/okdp/cel2yaml/internal/value"
+	"github.com/okdp/cel2yaml/value"
 )
 
 // version: set at build time (-ldflags "-X main.version=..."): make build,

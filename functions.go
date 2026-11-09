@@ -21,15 +21,20 @@ import (
 	"cel.dev/cel-go/common/types/traits"
 	sigsyaml "sigs.k8s.io/yaml"
 
-	"github.com/okdp/cel2yaml/internal/value"
+	"github.com/okdp/cel2yaml/value"
 )
 
 // Unary: the binding of a host function of one argument: f of the argument
-// as data (toData), its result converted back to CEL. An argument without
-// a data form, or f's error, fails the expression.
+// as data (ToData), its result converted back to CEL. An argument larger
+// than maxDocSize once converted (memSize), an argument without a data form,
+// or f's error, fails the expression: the conversion copies each shared
+// value as many times as it is held, so its size is checked before any.
 func Unary[T any](f func(any) (T, error)) cel.OverloadOpt {
 	return cel.UnaryBinding(func(v ref.Val) ref.Val {
-		d, err := toData(v)
+		if _, ok := memSize(v, maxDocSize); !ok {
+			return types.WrapErr(fmt.Errorf("a value larger than %d MiB to convert", maxDocSize>>20))
+		}
+		d, err := ToData(v)
 		var r T
 		if err == nil {
 			r, err = f(d)
@@ -80,7 +85,7 @@ func (l hostLib) ProgramOptions() []cel.ProgramOption {
 // the bytes of its arguments, about as many as their serialisation
 // (byteSize), plus the bytes of its result when a string (what it builds:
 // toJson, toYaml, quote of a large value). A host function converts its
-// whole argument to data (Unary, toData) and most serialise it (str,
+// whole argument to data (Unary, ToData) and most serialise it (str,
 // sha256, toJson, toYaml, quote): its work is linear in the argument's
 // bytes, which a map's or a list's entry count does not bound (a map of
 // one key, a string of a megabyte). It pays a unit a byte, ten times what

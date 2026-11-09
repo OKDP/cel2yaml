@@ -54,13 +54,13 @@ type Scope = map[string]any
 // block style, the keys of each map sorted, deterministic. A document a
 // false $if leaves out, or an empty one, writes nothing: nil.
 func Render(ctx context.Context, src []byte, scope Scope) ([]byte, error) {
-	return NewSession(ctx, DefaultCostLimit).Render(src, scope)
+	return NewSession(DefaultCostLimit).Render(ctx, src, scope)
 }
 
-// Render: src compiled on the scope in the session, as Render does, its
-// cost counted with the session's. The document is one document of the
-// session (Document).
-func (s *Session) Render(src []byte, scope Scope) ([]byte, error) {
+// Render: src compiled on the scope in the session, cancelled with ctx, as
+// Render does, its cost counted with the session's. The document is one
+// document of the session (Document).
+func (s *Session) Render(ctx context.Context, src []byte, scope Scope) ([]byte, error) {
 	n, err := Parse(src)
 	if err != nil || n == nil {
 		return nil, err
@@ -71,7 +71,7 @@ func (s *Session) Render(src []byte, scope Scope) ([]byte, error) {
 	}
 	var v any
 	var keep bool
-	if err := s.Document(func() (err error) { v, keep, err = t.Eval(scope); return err }); err != nil || !keep {
+	if err := s.Document(func() (err error) { v, keep, err = t.Eval(ctx, scope); return err }); err != nil || !keep {
 		return nil, err
 	}
 	return sigsyaml.Marshal(v)
@@ -106,10 +106,11 @@ func (s *Session) Template(n *yaml.Node, names []string) (*Template, error) {
 }
 
 // Eval: the template evaluated on scope, which holds the names it was
-// compiled with, in its session: its value as data, keep false when it is
+// compiled with, in its session, cancelled with ctx (between two
+// evaluations, and within one): its value as data, keep false when it is
 // left out ($if false, the value then null). The evaluation counts in the
 // session's cost, and in the document being evaluated (Session.Document).
 // An error names the path of the failing expression in the node.
-func (t *Template) Eval(scope Scope) (v any, keep bool, err error) {
-	return t.root.eval(t.s, scope)
+func (t *Template) Eval(ctx context.Context, scope Scope) (v any, keep bool, err error) {
+	return t.root.eval(ctx, t.s, scope)
 }

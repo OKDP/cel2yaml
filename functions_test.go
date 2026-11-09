@@ -33,8 +33,8 @@ func TestHostCostBytes(t *testing.T) {
 	const mib = 1 << 20
 	scope := M{"values": bigValue(mib)}
 	for _, src := range []string{"sha256(values)", "str(values)", "toJson(values)", "toYaml(values)", "quote(values)", "first([values])", "json.encode(values)"} {
-		s := NewSession(context.Background(), 1<<40)
-		if _, _, err := evalIn(s, "a: ${{ "+src+" }}\n", scope); err != nil {
+		s := NewSession(1 << 40)
+		if _, _, err := evalIn(context.Background(), s, "a: ${{ "+src+" }}\n", scope); err != nil {
 			t.Fatalf("%s: %v", src, err)
 		}
 		if s.used < mib || s.used > 4*mib {
@@ -42,7 +42,7 @@ func TestHostCostBytes(t *testing.T) {
 		}
 	}
 	const limit = 50_000_000
-	_, _, err := evalIn(NewSession(context.Background(), limit), "n: ${{ lists.range(300).map(i, sha256(values)).size() }}\n", scope)
+	_, _, err := evalIn(context.Background(), NewSession(limit), "n: ${{ lists.range(300).map(i, sha256(values)).size() }}\n", scope)
 	if err == nil || !strings.HasSuffix(err.Error(), fmt.Sprintf("exceed its CEL cost limit (%d)", limit)) {
 		t.Errorf("300 hashes of a mebibyte: got %v, want the limit exceeded", err)
 	}
@@ -56,12 +56,12 @@ func TestCosted(t *testing.T) {
 		Unary(func(v any) (int, error) { return len(fmt.Sprint(v)), nil }))), "count_dyn")
 	scope := M{"values": M{"big": strings.Repeat("x", 10000)}}
 	const limit = 5000
-	_, _, err := evalIn(NewSession(context.Background(), limit, fn), "a: ${{ count(values.big) }}\n", scope)
+	_, _, err := evalIn(context.Background(), NewSession(limit, fn), "a: ${{ count(values.big) }}\n", scope)
 	if err == nil || !strings.HasSuffix(err.Error(), fmt.Sprintf("exceed its CEL cost limit (%d)", limit)) {
 		t.Errorf("got %v, want the limit exceeded", err)
 	}
-	s := NewSession(context.Background(), limit, fn)
-	if _, _, err := evalIn(s, "a: ${{ count('x') }}\n", scope); err != nil || s.used == 0 || s.used > 10 {
+	s := NewSession(limit, fn)
+	if _, _, err := evalIn(context.Background(), s, "a: ${{ count('x') }}\n", scope); err != nil || s.used == 0 || s.used > 10 {
 		t.Errorf("a small argument: %v, cost %d", err, s.used)
 	}
 }
@@ -152,17 +152,17 @@ func TestHostCost(t *testing.T) {
 	const limit = 5000
 	for _, src := range []string{"quote(values.big)", "str(values.big)", "toJson(values.list)", "toPrettyJson(values.list)", "toYaml(values.list)", "values.list.join(',')"} {
 		doc := "a: ${{ " + src + " }}\n"
-		_, _, err := evalIn(NewSession(context.Background(), limit), doc, scope)
+		_, _, err := evalIn(context.Background(), NewSession(limit), doc, scope)
 		if err == nil || !strings.HasSuffix(err.Error(), fmt.Sprintf("exceed its CEL cost limit (%d)", limit)) {
 			t.Errorf("%s: got %v, want the limit exceeded", src, err)
 		}
-		s := NewSession(context.Background(), 0)
-		if _, _, err := evalIn(s, doc, scope); err != nil || s.used != 0 {
+		s := NewSession(0)
+		if _, _, err := evalIn(context.Background(), s, doc, scope); err != nil || s.used != 0 {
 			t.Errorf("%s without a limit: %v, %d counted", src, err, s.used)
 		}
 	}
-	s := NewSession(context.Background(), limit)
-	if _, _, err := evalIn(s, "a: ${{ quote(values.small) }}\n", scope); err != nil || s.used == 0 || s.used > 10 {
+	s := NewSession(limit)
+	if _, _, err := evalIn(context.Background(), s, "a: ${{ quote(values.small) }}\n", scope); err != nil || s.used == 0 || s.used > 10 {
 		t.Errorf("a small output: %v, cost %d", err, s.used)
 	}
 }
